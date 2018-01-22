@@ -31,6 +31,12 @@
     </properties>
     <dependencies>
         <dependency>
+            <groupId>org.apache.qpid</groupId>
+            <artifactId>proton-j</artifactId>
+            <version>0.25.0</version>
+            <type>jar</type>
+        </dependency>
+        <dependency>
             <groupId>com.microsoft.azure.sdk.iot</groupId>
             <artifactId>iot-deps</artifactId>
             <version>0.2.0</version>
@@ -89,11 +95,6 @@
             <groupId>log4j</groupId>
             <artifactId>log4j</artifactId>
             <version>1.2.17</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.qpid</groupId>
-            <artifactId>proton-j</artifactId>
-            <version>0.25.0</version>
         </dependency>
     </dependencies>
     <build>
