@@ -37,9 +37,9 @@
             <type>jar</type>
         </dependency>
         <dependency>
-            <groupId>com.microsoft.azure.sdk.iot</groupId>
-            <artifactId>iot-deps</artifactId>
-            <version>0.2.0</version>
+        <groupId>com.microsoft.azure.sdk.iot</groupId>
+        <artifactId>iot-deps</artifactId>
+        <version>0.2.0</version>
         </dependency>
         <dependency>
             <groupId>org.bouncycastle</groupId>
