@@ -6,11 +6,17 @@ package tests.unit.com.microsoft.azure.sdk.iot.device.transport.mqtt;
 import com.microsoft.azure.sdk.iot.device.*;
 import com.microsoft.azure.sdk.iot.device.auth.IotHubSasTokenAuthenticationProvider;
 import com.microsoft.azure.sdk.iot.device.net.IotHubUri;
+import com.microsoft.azure.sdk.iot.device.transport.ConnectionStatusExceptions.ConnectionStatusException;
+import com.microsoft.azure.sdk.iot.device.transport.ConnectionStatusExceptions.IotHubConnectionStatusException;
+import com.microsoft.azure.sdk.iot.device.transport.ConnectionStatusExceptions.ProtocolConnectionStatusException;
+import com.microsoft.azure.sdk.iot.device.transport.IotHubListener;
 import com.microsoft.azure.sdk.iot.device.transport.IotHubTransportMessage;
 import com.microsoft.azure.sdk.iot.device.transport.State;
 import com.microsoft.azure.sdk.iot.device.transport.TransportUtils;
 import com.microsoft.azure.sdk.iot.device.transport.mqtt.*;
+import com.microsoft.azure.sdk.iot.device.transport.mqtt.exceptions.*;
 import mockit.*;
+import org.eclipse.paho.client.mqttv3.MqttException;
 import org.junit.Test;
 
 import javax.net.ssl.SSLContext;
@@ -22,7 +28,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
 /* Unit tests for MqttIotHubConnection
- * Code coverage: 100% methods, 95% lines
+ * Code coverage: 90% methods, 94% lines
  */
 public class MqttIotHubConnectionTest
 {
@@ -72,6 +78,18 @@ public class MqttIotHubConnectionTest
 
     @Mocked
     private IotHubSasTokenAuthenticationProvider mockedSasTokenAuthenticationProvider;
+
+    @Mocked
+    private IotHubListener mockedIotHubListener;
+
+    @Mocked
+    private ConnectionStatusException mockedConnectionStatusException;
+
+    @Mocked
+    private ProtocolConnectionStatusException mockedProtocolConnectionStatusException;
+
+    @Mocked
+    private IotHubConnectionStatusException mockedIotHubConnectionStatusException;
 
     // Tests_SRS_MQTTIOTHUBCONNECTION_15_001: [The constructor shall save the configuration.]
     @Test
@@ -967,6 +985,7 @@ public class MqttIotHubConnectionTest
             }
         };
     }
+
     // Tests_SRS_MQTTIOTHUBCONNECTION_15_015: [If the MQTT connection is closed,
     // the function shall throw an IllegalStateException.]
     @Test(expected = IllegalStateException.class)
@@ -1065,7 +1084,7 @@ public class MqttIotHubConnectionTest
         connection.open();
     }
 
-    //Tests_SRS_MQTTIOTHUBCONNECTION_34_030: [This function shall instantiate this object's MqttMessaging object with this object as the listener.]
+    //Tests_SRS_MQTTIOTHUBCONNECTION_34_030: [This function shall instantiate this object's MqttMessaging object with this object as the listeners.]
     @Test
     public void openSavesListenerToMessagingClient() throws IOException
     {
@@ -1100,45 +1119,67 @@ public class MqttIotHubConnectionTest
         };
     }
 
-    //Tests_SRS_MQTTIOTHUBCONNECTION_34_028: [If this object's connection state callback is not null, this function shall fire that callback with the saved context and status CONNECTION_DROP.]
+    //Tests_SRS_MQTTIOTHUBCONNECTION_34_037: [If the provided throwable is an instance of MqttException, this function shall derive the associated ConnectionStatusException and notify the listeners of that derived exception.]
     @Test
-    public void connectionDropFiresCallback()
+    public void connectionDropFiresCallbackWithMqttException() throws IOException
     {
         //arrange
         baseExpectations();
         MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
-        Deencapsulation.invoke(connection, "registerConnectionStateCallback", mockConnectionStateCallback, new Object());
+        connection.addListener(mockedIotHubListener);
 
         //act
-        connection.connectionLost();
+        connection.onConnectionLost(new MqttException(404));
 
         //assert
         new Verifications()
         {
             {
-                mockConnectionStateCallback.execute(IotHubConnectionState.CONNECTION_DROP, any);
+                mockedIotHubListener.onConnectionLost((ConnectionStatusException) any);
                 times = 1;
             }
         };
     }
 
-    //Tests_SRS_MQTTIOTHUBCONNECTION_34_029: [If this object's connection state callback is not null, this function shall fire that callback with the saved context and status CONNECTION_SUCCESS.]
+    //Tests_SRS_MQTTIOTHUBCONNECTION_34_038: [If the provided throwable is not an instance of MqttException, this function shall notify the listeners of that throwable.]
     @Test
-    public void connectionEstablishedFiresCallback()
+    public void connectionDropFiresCallback() throws IOException
     {
         //arrange
         baseExpectations();
         MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
-        Deencapsulation.invoke(connection, "registerConnectionStateCallback", mockConnectionStateCallback, new Object());
+        connection.addListener(mockedIotHubListener);
 
         //act
-        connection.connectionEstablished();
+        connection.onConnectionLost(new SecurityException());
 
         //assert
         new Verifications()
         {
             {
-                mockConnectionStateCallback.execute(IotHubConnectionState.CONNECTION_SUCCESS, any);
+                mockedIotHubListener.onConnectionLost((SecurityException) any);
+                times = 1;
+            }
+        };
+    }
+
+    //Tests_SRS_MQTTIOTHUBCONNECTION_34_036: [This function shall notify its listeners that connection was established successfully.]
+    @Test
+    public void connectionEstablishedFiresCallback() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+
+        //act
+        connection.onConnectionEstablished();
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedIotHubListener.onConnectionEstablished(null);
                 times = 1;
             }
         };
@@ -1156,27 +1197,7 @@ public class MqttIotHubConnectionTest
         Deencapsulation.invoke(connection, "registerConnectionStateCallback", new Class[] {IotHubConnectionStateCallback.class, Object.class}, null, new Object());
     }
 
-    //Tests_SRS_MQTTIOTHUBCONNECTION_34_034: [This function shall save the provided callback and callback context.]
-    @Test
-    public void registerConnectionStateCallbackSavesCallbackAndContext()
-    {
-        //arrange
-        baseExpectations();
-        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
-        final Object callbackContext = new Object();
-
-        //act
-        Deencapsulation.invoke(connection, "registerConnectionStateCallback", mockConnectionStateCallback, callbackContext);
-
-        //assert
-        IotHubConnectionStateCallback actualConnectionStateCallback = Deencapsulation.getField(connection, "stateCallback");
-        Object actualConnectionStateCallbackContext = Deencapsulation.getField(connection, "stateCallbackContext");
-        assertEquals(mockConnectionStateCallback, actualConnectionStateCallback);
-        assertEquals(callbackContext, actualConnectionStateCallbackContext);
-    }
-
     //Tests_SRS_MQTTIOTHUBCONNECTION_34_035: [If the sas token saved in the config has expired and needs to be renewed, this function shall return UNAUTHORIZED.]
-    //Tests_SRS_MQTTIOTHUBCONNECTION_34_036: [If the sas token saved in the config has expired and needs to be renewed and if there is a connection state callback saved, this function shall invoke that callback with Status SAS_TOKEN_EXPIRED.]
     @Test
     public void sendMessageChecksForExpiredSasToken() throws IOException
     {
@@ -1196,19 +1217,282 @@ public class MqttIotHubConnectionTest
                 result = true;
             }
         };
-        Deencapsulation.invoke(connection, "registerConnectionStateCallback", mockConnectionStateCallback, new Object());
         connection.open();
 
         //act
-        IotHubStatusCode statusCode = connection.sendEvent(mockedMessage);
+        IotHubStatusCode statusCode = connection.sendMessage(mockedMessage);
 
         //assert
         assertEquals(IotHubStatusCode.UNAUTHORIZED, statusCode);
+    }
+
+    //Tests_SRS_MQTTIOTHUBCONNECTION_34_039: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map all client exceptions with underlying UnknownHostException or InterruptedException to a retryable ProtocolConnectionStatusException.]
+    @Test
+    public void onConnectionLostMapsInterruptedExceptionToRetryableConnectionStatusException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_CLIENT_EXCEPTION);
+        Deencapsulation.setField(exception, "cause", new InterruptedException());
+        new NonStrictExpectations()
+        {
+            {
+                new ProtocolConnectionStatusException(exception);
+                result = mockedProtocolConnectionStatusException;
+            }
+        };
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
         new Verifications()
         {
             {
-                mockConnectionStateCallback.execute(IotHubConnectionState.SAS_TOKEN_EXPIRED, any);
+                mockedProtocolConnectionStatusException.setRetryable(true);
                 times = 1;
+                mockedIotHubListener.onConnectionLost(mockedProtocolConnectionStatusException);
+                times = 1;
+            }
+        };
+    }
+
+    //Tests_SRS_MQTTIOTHUBCONNECTION_34_040: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map all client exceptions without underlying UnknownHostException and InterruptedException to a non retryable ProtocolConnectionStatusException.]
+    @Test
+    public void onConnectionLostMapsUnknownClientExceptionToNonRetryableConnectionStatusException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_CLIENT_EXCEPTION);
+        Deencapsulation.setField(exception, "cause", new SecurityException());
+        new NonStrictExpectations()
+        {
+            {
+                new ProtocolConnectionStatusException(exception);
+                result = mockedProtocolConnectionStatusException;
+            }
+        };
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedProtocolConnectionStatusException.setRetryable(true);
+                times = 0;
+                mockedIotHubListener.onConnectionLost(mockedProtocolConnectionStatusException);
+                times = 1;
+            }
+        };
+    }
+
+    // Tests_SRS_MQTTIOTHUBCONNECTION_34_041: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map REASON_CODE_INVALID_PROTOCOL_VERSION to ConnectionStatusMqttRejectedProtocolVersionException.]
+    @Test
+    public void onConnectionLostMapsInvalidProtocolVersionException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_INVALID_PROTOCOL_VERSION);
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedIotHubListener.onConnectionLost((ConnectionStatusMqttRejectedProtocolVersionException) any);
+                times = 1;
+            }
+        };
+    }
+
+    // Tests_SRS_MQTTIOTHUBCONNECTION_34_042: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map REASON_CODE_INVALID_CLIENT_ID to ConnectionStatusMqttIdentifierRejectedException.]
+    @Test
+    public void onConnectionLostMapsInvalidClientIdException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_INVALID_CLIENT_ID);
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedIotHubListener.onConnectionLost((ConnectionStatusMqttIdentifierRejectedException) any);
+                times = 1;
+            }
+        };
+    }
+
+    // Tests_SRS_MQTTIOTHUBCONNECTION_34_043: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map REASON_CODE_BROKER_UNAVAILABLE to ConnectionStatusMqttServerUnavailableException.]
+    @Test
+    public void onConnectionLostMapsBrokerUnavailableException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_BROKER_UNAVAILABLE);
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedIotHubListener.onConnectionLost((ConnectionStatusMqttServerUnavailableException) any);
+                times = 1;
+            }
+        };
+    }
+
+    // Tests_SRS_MQTTIOTHUBCONNECTION_34_044: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map REASON_CODE_FAILED_AUTHENTICATION to ConnectionStatusMqttBadUsernameOrPasswordException.]
+    @Test
+    public void onConnectionLostMapsFailedAuthenticationException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_FAILED_AUTHENTICATION);
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedIotHubListener.onConnectionLost((ConnectionStatusMqttBadUsernameOrPasswordException) any);
+                times = 1;
+            }
+        };
+    }
+
+    // Tests_SRS_MQTTIOTHUBCONNECTION_34_045: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map REASON_CODE_NOT_AUTHORIZED to ConnectionStatusMqttUnauthorizedException.]
+    @Test
+    public void onConnectionLostMapsNotAuthorizedException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_NOT_AUTHORIZED);
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedIotHubListener.onConnectionLost((ConnectionStatusMqttUnauthorizedException) any);
+                times = 1;
+            }
+        };
+    }
+
+    //Tests_SRS_MQTTIOTHUBCONNECTION_34_047: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map any connect codes between 6 and 255 inclusive to ConnectionStatusMqttUnexpectedErrorException.]
+    @Test
+    public void onConnectionLostMapsUnexpectedConnectCodeException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_UNEXPECTED_ERROR);
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedIotHubListener.onConnectionLost((ConnectionStatusMqttUnexpectedErrorException) any);
+                times = 1;
+            }
+        };
+    }
+
+    //Tests_SRS_MQTTIOTHUBCONNECTION_34_048: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map all other MqttExceptions to ProtocolConnectionStatusException.]
+    @Test
+    public void onConnectionLostMapsUnknownPahoException() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception = new MqttException(MqttException.REASON_CODE_SSL_CONFIG_ERROR);
+
+        //act
+        connection.onConnectionLost(exception);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedIotHubListener.onConnectionLost((ProtocolConnectionStatusException) any);
+                times = 1;
+            }
+        };
+    }
+
+    // Tests_SRS_MQTTIOTHUBCONNECTION_34_046: [When deriving the ConnectionStatusException from the provided MqttException, this function shall map REASON_CODE_SUBSCRIBE_FAILED, REASON_CODE_CLIENT_NOT_CONNECTED, REASON_CODE_TOKEN_INUSE, REASON_CODE_CONNECTION_LOST, REASON_CODE_SERVER_CONNECT_ERROR, REASON_CODE_CLIENT_TIMEOUT, REASON_CODE_WRITE_TIMEOUT, and REASON_CODE_MAX_INFLIGHT to a retryable ProtocolConnectionStatusException.]
+    @Test
+    public void onConnectionLostMapsRetryableExceptionsCorrectly() throws IOException
+    {
+        //arrange
+        baseExpectations();
+        MqttIotHubConnection connection = new MqttIotHubConnection(mockConfig);
+        connection.addListener(mockedIotHubListener);
+        final MqttException exception1 = new MqttException(MqttException.REASON_CODE_SUBSCRIBE_FAILED);
+        final MqttException exception2 = new MqttException(MqttException.REASON_CODE_CLIENT_NOT_CONNECTED);
+        final MqttException exception3 = new MqttException(MqttException.REASON_CODE_TOKEN_INUSE);
+        final MqttException exception4 = new MqttException(MqttException.REASON_CODE_CONNECTION_LOST);
+        final MqttException exception5 = new MqttException(MqttException.REASON_CODE_SERVER_CONNECT_ERROR);
+        final MqttException exception6 = new MqttException(MqttException.REASON_CODE_CLIENT_TIMEOUT);
+        final MqttException exception7 = new MqttException(MqttException.REASON_CODE_WRITE_TIMEOUT);
+        final MqttException exception8 = new MqttException(MqttException.REASON_CODE_MAX_INFLIGHT);
+        new NonStrictExpectations()
+        {
+            {
+                new ProtocolConnectionStatusException((Exception) any);
+                result = mockedProtocolConnectionStatusException;
+            }
+        };
+
+        //act
+        connection.onConnectionLost(exception1);
+        connection.onConnectionLost(exception2);
+        connection.onConnectionLost(exception3);
+        connection.onConnectionLost(exception4);
+        connection.onConnectionLost(exception5);
+        connection.onConnectionLost(exception6);
+        connection.onConnectionLost(exception7);
+        connection.onConnectionLost(exception8);
+
+        //assert
+        new Verifications()
+        {
+            {
+                mockedProtocolConnectionStatusException.setRetryable(true);
+                times = 8;
             }
         };
     }
