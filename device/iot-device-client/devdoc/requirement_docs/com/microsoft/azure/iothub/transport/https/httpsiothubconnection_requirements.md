@@ -61,9 +61,11 @@ public ResponseMessage sendEvent(HttpsMessage msg) throws IOException;
 
 **SRS_HTTPSIOTHUBCONNECTION_34_052: [**If the SAS token used by this has expired, the function shall return a ResponseMessage object with the IotHubStatusCode UNAUTHORIZED.**]**
 
-**SRS_HTTPSIOTHUBCONNECTION_34_055: [**This function shall retrieve a sas token from its config to use in the https request header.**]**
-
 **SRS_HTTPSIOTHUBCONNECTION_34_059: [**If this config is using x509 authentication, this function shall retrieve its sslcontext from its x509 Authentication object.**]**
+
+**SRS_HTTPSIOTHUBCONNECTION_34_063: [**If this function encounters a NoRouteToHostException or UnknownHostException upon sending the http request, this function shall notify its listeners of a retryable ProtocolConnectionStatusException.**]**
+
+**SRS_HTTPSIOTHUBCONNECTION_34_064: [**Upon receiving a response code from the service from the HTTP request, this function shall check if that response code signifies a connection status exception and, if it is, this function shall notify its listeners of that exception.**]**
 
 
 ### sendHttpsMessage

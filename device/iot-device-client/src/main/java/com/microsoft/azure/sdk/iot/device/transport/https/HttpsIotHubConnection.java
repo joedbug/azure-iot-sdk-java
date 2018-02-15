@@ -5,12 +5,18 @@ package com.microsoft.azure.sdk.iot.device.transport.https;
 
 import com.microsoft.azure.sdk.iot.device.*;
 import com.microsoft.azure.sdk.iot.device.net.*;
+import com.microsoft.azure.sdk.iot.device.transport.ConnectionStatusExceptions.ProtocolConnectionStatusException;
 import com.microsoft.azure.sdk.iot.device.transport.IotHubListener;
 import com.microsoft.azure.sdk.iot.device.transport.IotHubTransportConnection;
-
+import com.microsoft.azure.sdk.iot.device.transport.ConnectionStatusExceptions.ConnectionStatusException;
+import com.microsoft.azure.sdk.iot.device.IotHubStatusCode;
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
+import java.net.NoRouteToHostException;
 import java.net.URL;
+import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Map;
 
 /**
@@ -26,6 +32,8 @@ public class HttpsIotHubConnection implements IotHubTransportConnection
     private static final String HTTPS_PROPERTY_IOTHUB_MESSAGELOCKTIMEOUT_TAG = "iothub-messagelocktimeout";
     private static final String HTTPS_PROPERTY_IF_MATCH_TAG = "if-match";
     private static final String HTTPS_PROPERTY_ETAG_TAG = "etag";
+
+    private Collection<IotHubListener> listeners;
 
     /** The HTTPS connection lock. */
     private final Object HTTPS_CONNECTION_LOCK = new Object();
@@ -51,6 +59,7 @@ public class HttpsIotHubConnection implements IotHubTransportConnection
         {
             // Codes_SRS_HTTPSIOTHUBCONNECTION_11_001: [The constructor shall save the client configuration.]
             this.config = config;
+            this.listeners = new ArrayList<>();
         }
     }
 
@@ -97,11 +106,9 @@ public class HttpsIotHubConnection implements IotHubTransportConnection
             {
                 sslContext = this.config.getSasTokenAuthentication().getSSLContext();
 
-                //Codes_SRS_HTTPSIOTHUBCONNECTION_34_055: [This function shall retrieve a sas token from its config to use in the https request header.]
                 if (this.config.getSasTokenAuthentication().isRenewalNecessary())
                 {
-                    //Codes_SRS_HTTPSIOTHUBCONNECTION_34_052: [If the SAS token used by this has expired, the function shall return a ResponseMessage object with the IotHubStatusCode UNAUTHORIZED.]
-                    return new ResponseMessage("Your sas token has expired".getBytes(), IotHubStatusCode.UNAUTHORIZED);
+                    return IotHubStatusCode.UNAUTHORIZED;
                 }
 
                 // Codes_SRS_HTTPSIOTHUBCONNECTION_11_007: [The function shall set the header field 'authorization' to be a valid SAS token generated from the configuration parameters.]
@@ -123,14 +130,39 @@ public class HttpsIotHubConnection implements IotHubTransportConnection
                     // Codes_SRS_HTTPSIOTHUBCONNECTION_11_009: [The function shall set the header field 'content-type' to be the message content type.]
                             setHeaderField(HTTPS_PROPERTY_CONTENT_TYPE_TAG, msg.getContentType());
 
-            // Codes_SRS_HTTPSIOTHUBCONNECTION_11_012: [If the IoT Hub could not be reached, the function shall throw an IOException.]
-            HttpsResponse response = request.send();
+            HttpsResponse response = null;
 
-            // Codes_SRS_HTTPSIOTHUBCONNECTION_11_010: [The function shall return a ResponseMessage with the status and payload.]
+            try
+            {
+                response = request.send();
+            }
+            catch (NoRouteToHostException | UnknownHostException e)
+            {
+                //Codes_SRS_HTTPSIOTHUBCONNECTION_34_063: [If this function encounters a NoRouteToHostException or UnknownHostException upon sending the http request, this function shall notify its listeners of a retryable ProtocolConnectionStatusException.]
+                ConnectionStatusException connectionStatusException = new ProtocolConnectionStatusException();
+                connectionStatusException.setRetryable(true);
+
+                for (IotHubListener listener : this.listeners)
+                {
+                    listener.onConnectionLost(connectionStatusException);
+                }
+
+                // Codes_SRS_HTTPSIOTHUBCONNECTION_11_012: [If the IoT Hub could not be reached, the function shall throw an IOException.]
+                throw e;
+            }
+
+            //Codes_SRS_HTTPSIOTHUBCONNECTION_34_064: [Upon receiving a response code from the service from the HTTP request, this function shall check if that response code signifies a connection status exception and, if it is, this function shall notify its listeners of that exception.]
             IotHubStatusCode status = IotHubStatusCode.getIotHubStatusCode(response.getStatus());
-            byte[] body = response.getBody();
+            ConnectionStatusException connectionStatusException = IotHubStatusCode.getConnectionStatusException(status, "");
+            if (connectionStatusException != null)
+            {
+                for (IotHubListener listener : this.listeners)
+                {
+                    listener.onConnectionLost(connectionStatusException);
+                }
+            }
 
-            return new ResponseMessage(body, status);
+            return status;
         }
     }
 
@@ -434,7 +466,7 @@ public class HttpsIotHubConnection implements IotHubTransportConnection
     @Override
     public void addListener(IotHubListener listener) throws IOException
     {
-
+        this.listeners.add(listener);
     }
 
     @Override
