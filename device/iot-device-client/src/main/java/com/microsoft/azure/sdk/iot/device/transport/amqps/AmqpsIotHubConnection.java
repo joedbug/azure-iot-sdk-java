@@ -6,10 +6,13 @@ package com.microsoft.azure.sdk.iot.device.transport.amqps;
 
 import com.microsoft.azure.sdk.iot.deps.ws.impl.WebSocketImpl;
 import com.microsoft.azure.sdk.iot.device.*;
+import com.microsoft.azure.sdk.iot.device.transport.ConnectionStatusExceptions.ConnectionStatusException;
+import com.microsoft.azure.sdk.iot.device.transport.ConnectionStatusExceptions.ProtocolConnectionStatusException;
 import com.microsoft.azure.sdk.iot.device.transport.IotHubListener;
 import com.microsoft.azure.sdk.iot.device.transport.IotHubTransportConnection;
 import com.microsoft.azure.sdk.iot.device.transport.State;
 import com.microsoft.azure.sdk.iot.device.transport.TransportUtils;
+import com.microsoft.azure.sdk.iot.device.transport.amqps.exceptions.*;
 import org.apache.qpid.proton.Proton;
 import org.apache.qpid.proton.amqp.messaging.Accepted;
 import org.apache.qpid.proton.amqp.transport.DeliveryState;
@@ -23,7 +26,8 @@ import org.apache.qpid.proton.reactor.ReactorOptions;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.List;
+import java.util.Collection;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -45,7 +49,6 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
     private static final String WEB_SOCKET_SUB_PROTOCOL = "AMQPWSB10";
     private static final int AMQP_PORT = 5671;
     private static final int AMQP_WEB_SOCKET_PORT = 443;
-    private String sasToken;
 
     private Connection connection;
 
@@ -54,7 +57,7 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
     private final Boolean useWebSockets;
     private DeviceClientConfig deviceClientConfig;
 
-    private final List<ServerListener> listeners = new ArrayList<>();
+    private Collection<IotHubListener> listeners;
     private ExecutorService executorService;
 
     private final ObjectLock openLock = new ObjectLock();
@@ -66,7 +69,9 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
     private int currentReconnectionAttempt;
     private CustomLogger logger;
 
-    public AmqpsSessionManager amqpsSessionManager;
+	public AmqpsSessionManager amqpsSessionManager;
+    private final static String APPLICATION_PROPERTY_STATUS_CODE = "status-code";
+    private final static String APPLICATION_PROPERTY_STATUS_DESCRIPTION = "status-description";
 
     /**
      * Constructor to set up connection parameters using the {@link DeviceClientConfig}.
@@ -145,6 +150,8 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
             logger.LogError(e);
             throw new IOException("Could not create Proton reactor");
         }
+        listeners = new ArrayList<>();
+
         logger.LogInfo("AmqpsIotHubConnection object is created successfully using port %s in %s method ", useWebSockets ? AMQP_WEB_SOCKET_PORT : AMQP_PORT, logger.getMethodName());
 
         // Codes_SRS_AMQPSIOTHUBCONNECTION_12_001: [The constructor shall initialize the AmqpsSessionManager member variable with the given config.]
@@ -230,15 +237,6 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
     private void openAsync() throws IOException
     {
         logger.LogDebug("Entered in method %s", logger.getMethodName());
-
-        if (this.deviceClientConfig.getAuthenticationType() == DeviceClientConfig.AuthType.X509_CERTIFICATE)
-        {
-            this.sasToken = null;
-        }
-        else if (this.deviceClientConfig.getAuthenticationType() == DeviceClientConfig.AuthType.SAS_TOKEN)
-        {
-            this.sasToken = this.deviceClientConfig.getSasTokenAuthentication().getRenewedSasToken();
-        }
 
         if (this.reactor == null)
         {
@@ -507,10 +505,11 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
             // Codes_SRS_AMQPSIOTHUBCONNECTION_12_013: [The function shall call openAsync and disable reconnection if it is a reconnection attempt.]
             reconnectCall = false;
 
-            for (ServerListener listener : listeners)
-            {
-                listener.reconnect();
-            }
+            //TODO?
+            //for (ServerListener listener : listeners)
+            //{
+            //    listener.reconnect();
+            //}
         }
 
         logger.LogDebug("Exited from method %s", logger.getMethodName());
@@ -603,39 +602,90 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
         {
             String linkName = event.getLink().getName();
             amqpsMessage = this.amqpsSessionManager.getMessageFromReceiverLink(linkName);
+
+            if (amqpsMessage != null)
+            {
+                com.microsoft.azure.sdk.iot.device.Message message = this.convertFromProton(amqpsMessage, this.deviceClientConfig).getMessage();
+                if (amqpsMessage.getApplicationProperties() != null && amqpsMessage.getApplicationProperties().getValue() != null)
+                {
+                    Map<String, Object> properties = amqpsMessage.getApplicationProperties().getValue();
+
+                    if (properties.containsKey(APPLICATION_PROPERTY_STATUS_CODE))
+                    {
+                        int statusCode;
+                        try
+                        {
+                            statusCode = Integer.valueOf(properties.get(APPLICATION_PROPERTY_STATUS_CODE).toString());
+                            IotHubStatusCode iotHubStatusCode = IotHubStatusCode.getIotHubStatusCode(statusCode);
+
+                            if (iotHubStatusCode == IotHubStatusCode.OK || iotHubStatusCode == IotHubStatusCode.OK_EMPTY)
+                            {
+                                //Codes_SRS_AMQPSIOTHUBCONNECTION_34_090: [If an amqp message can be received from the receiver link, and that amqp message contains a status code that is 200 or 204, this function shall notify this object's listeners that that message was received with a null exception.]
+                                this.notifyListenersMessageReceived(message, null);
+                            }
+                            else
+                            {
+                                String statusDescription = "";
+                                if (properties.containsKey(APPLICATION_PROPERTY_STATUS_DESCRIPTION))
+                                {
+                                    statusDescription = (String) properties.get(APPLICATION_PROPERTY_STATUS_DESCRIPTION);
+                                }
+
+                                //Codes_SRS_AMQPSIOTHUBCONNECTION_34_089: [If an amqp message can be received from the receiver link, and that amqp message contains a status code that is not 200 or 204, this function shall notify this object's listeners that that message was received and provide the status code's mapped exception.]
+                                ConnectionStatusException connectionStatusException = IotHubStatusCode.getConnectionStatusException(iotHubStatusCode, statusDescription);
+
+                                this.notifyListenersMessageReceived(message, connectionStatusException);
+                            }
+                        }
+                        catch (NumberFormatException e)
+                        {
+                            logger.LogInfo("status code received from service could not be parsed to integer, method name is %s ", logger.getMethodName());
+                            //Codes_SRS_AMQPSIOTHUBCONNECTION_34_093: [If an amqp message can be received from the receiver link, and that amqp message contains a status code, but that status code cannot be parsed to an integer, this function shall notify this object's listeners that that message was received with a null exception.]
+                            this.notifyListenersMessageReceived(message, null);
+                        }
+                    }
+                    else
+                    {
+                        //Codes_SRS_AMQPSIOTHUBCONNECTION_34_091: [If an amqp message can be received from the receiver link, and that amqp message contains no status code, this function shall notify this object's listeners that that message was received with a null exception.]
+                        this.notifyListenersMessageReceived(message, null);
+                    }
+                }
+                else
+                {
+                    //Codes_SRS_AMQPSIOTHUBCONNECTION_34_092: [If an amqp message can be received from the receiver link, and that amqp message contains no application properties, this function shall notify this object's listeners that that message was received with a null exception.]
+                    this.notifyListenersMessageReceived(message, null);
+                }
+            }
+            else
+            {
+                //Sender specific section for dispositions it receives
+                if (event.getType() == Event.Type.DELIVERY)
+                {
+                    logger.LogInfo("Reading the delivery event in Sender link, method name is %s ", logger.getMethodName());
+                    // Codes_SRS_AMQPSIOTHUBCONNECTION_15_038: [If this link is the Sender link and the event type is DELIVERY, the event handler shall get the Delivery (Proton) object from the event.]
+                    Delivery d = event.getDelivery();
+                    DeliveryState remoteState = d.getRemoteState();
+
+                    // Codes_SRS_AMQPSIOTHUBCONNECTION_15_039: [The event handler shall note the remote delivery state and use it and the Delivery (Proton) hash code to inform the AmqpsIotHubConnection of the message receipt.]
+                    boolean state = remoteState.equals(Accepted.getInstance());
+                    logger.LogInfo("Is state of remote Delivery COMPLETE ? %s, method name is %s ", state, logger.getMethodName());
+                    logger.LogInfo("Inform listeners that a message has been sent to IoT Hub along with remote state, method name is %s ", logger.getMethodName());
+
+                    for (IotHubListener listener : this.listeners)
+                    {
+                        listener.onMessageSent(new com.microsoft.azure.sdk.iot.device.Message(""), null);
+                        //TODO can only get hashcode from here. Transport layer only needs that hashcode to find the message to move from inProgress queue to sent queue
+                        //Since AMQP is the only protocol we have that has this acknowledgement functionality, maybe change messageSent parameters to take an integer instead
+                    }
+
+                    // release the delivery object which created in sendMessage().
+                    d.free();
+                }
+            }
         }
         catch (IOException e)
         {
             logger.LogDebug("onDelivery has thrown exception: %s", e.getMessage());
-        }
-
-        if (amqpsMessage != null)
-        {
-            // Codes_SRS_AMQPSIOTHUBCONNECTION_15_050: [All the listeners shall be notified that a message was received from the server.]
-            this.messageReceivedFromServer(amqpsMessage);
-        }
-        else
-        {
-            //Sender specific section for dispositions it receives
-            if (event.getType() == Event.Type.DELIVERY)
-            {
-                logger.LogInfo("Reading the delivery event in Sender link, method name is %s ", logger.getMethodName());
-                // Codes_SRS_AMQPSIOTHUBCONNECTION_15_038: [If this link is the Sender link and the event type is DELIVERY, the event handler shall get the Delivery (Proton) object from the event.]
-                Delivery d = event.getDelivery();
-                DeliveryState remoteState = d.getRemoteState();
-
-                // Codes_SRS_AMQPSIOTHUBCONNECTION_15_039: [The event handler shall note the remote delivery state and use it and the Delivery (Proton) hash code to inform the AmqpsIotHubConnection of the message receipt.]
-                boolean state = remoteState.equals(Accepted.getInstance());
-                logger.LogInfo("Is state of remote Delivery COMPLETE ? %s, method name is %s ", state, logger.getMethodName());
-                logger.LogInfo("Inform listener that a message has been sent to IoT Hub along with remote state, method name is %s ", logger.getMethodName());
-                //let any listener know that the message was received by the server
-                for (ServerListener listener : listeners)
-                {
-                    listener.messageSent(d.hashCode(), state);
-                }
-                // release the delivery object which created in sendMessage().
-                d.free();
-            }
         }
 
         logger.LogDebug("Exited from method %s", logger.getMethodName());
@@ -694,10 +744,11 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
         if (this.amqpsSessionManager.onLinkRemoteOpen(event))
         {
             this.state = State.OPEN;
+
             // Codes_SRS_AMQPSIOTHUBCONNECTION_99_001: [All server listeners shall be notified when that the connection has been established.]
-            for(ServerListener listener : listeners)
+            for (IotHubListener listener : this.listeners)
             {
-                listener.connectionEstablished();
+                listener.onConnectionEstablished(null);
             }
 
             // Codes_SRS_AMQPSIOTHUBCONNECTION_21_051 [The open lock shall be notified when that the connection has been established.]
@@ -723,6 +774,14 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
 
         this.state = State.CLOSED;
 
+        if (event.getSender() != null && event.getSender().getRemoteCondition() != null && event.getSender().getRemoteCondition().getCondition() != null)
+        {
+            //Codes_SRS_AMQPSIOTHUBCONNECTION_34_061 [If the provided event object's transport holds a remote error condition object, this function shall report the associated ConnectionStatusException to this object's listeners.]
+            String errorCode = event.getSender().getRemoteCondition().getCondition().toString();
+            ConnectionStatusException connectionStatusException = AmqpsIotHubConnection.getConnectionStatusExceptionFromAMQPExceptionCode(errorCode);
+            this.notifyListenersConnectionLost(connectionStatusException);
+        }
+
         String linkName = event.getLink().getName();
         if (this.amqpsSessionManager.isLinkFound(linkName))
         {
@@ -744,25 +803,20 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
         logger.LogDebug("Entered in method %s", logger.getMethodName());
 
         this.state = State.CLOSED;
+
+        if (event.getTransport() != null && event.getTransport().getCondition() != null && event.getTransport().getCondition().getCondition() != null)
+        {
+            //Codes_SRS_AMQPSIOTHUBCONNECTION_34_060 [If the provided event object's transport holds an error condition object, this function shall report the associated ConnectionStatusException to this object's listeners.]
+            String errorCode = event.getTransport().getCondition().getCondition().toString();
+            ConnectionStatusException connectionStatusException = AmqpsIotHubConnection.getConnectionStatusExceptionFromAMQPExceptionCode(errorCode);
+            this.notifyListenersConnectionLost(connectionStatusException);
+        }
+
         logger.LogInfo("Starting to reconnect to IotHub, method name is %s ", logger.getMethodName());
         // Codes_SRS_AMQPSIOTHUBCONNECTION_15_048: [The event handler shall attempt to startReconnect to IoTHub.]
         startReconnect();
 
         logger.LogDebug("Exited from method %s", logger.getMethodName());
-    }
-
-    /**
-     * Subscribe a listener to the list of listeners.
-     * @param listener the listener to be subscribed.
-     */
-    public void addListener(ServerListener listener)
-    {
-        // Codes_SRS_AMQPSIOTHUBCONNECTION_12_053: [The function shall do nothing if the listener parameter is null.]
-        if (listener != null)
-        {
-            // Codes_SRS_AMQPSIOTHUBCONNECTION_12_053: [The function shall add the given listener to the listener list.]
-            listeners.add(listener);
-        }
     }
 
     /**
@@ -806,12 +860,6 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
 
         reconnectCall = true;
 
-        // Codes_SRS_AMQPSIOTHUBCONNECTION_12_007: [The event handler shall notify all server listeners when that the connection has been lost.]
-        for(ServerListener listener : listeners)
-        {
-            listener.connectionLost();
-        }
-
         if (currentReconnectionAttempt == Integer.MAX_VALUE)
             currentReconnectionAttempt = 0;
 
@@ -828,18 +876,88 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
         closeAsync();
     }
 
-    /**
-     * Notifies all the listeners that a message was received from the server.
-     * @param msg The message received from server.
-     */
-    private void messageReceivedFromServer(AmqpsMessage msg)
+    static ConnectionStatusException getConnectionStatusExceptionFromAMQPExceptionCode(String exceptionCode)
     {
-        logger.LogDebug("Entered in method %s", logger.getMethodName());
-
-        logger.LogInfo("All the listeners are informed that a message has been received, method name is %s ", logger.getMethodName());
-        for(ServerListener listener : listeners)
+        switch (exceptionCode)
         {
-            listener.messageReceived(msg);
+            case ConnectionStatusAmqpConnectionForcedException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_076: [The function shall map amqp exception code "amqp:connection:forced" to ConnectionStatusException "ConnectionStatusAmqpConnectionForcedException".]
+                return new ConnectionStatusAmqpConnectionForcedException();
+            case ConnectionStatusAmqpConnectionRedirectException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_078: [The function shall map amqp exception code "amqp:connection:redirect" to ConnectionStatusException "ConnectionStatusAmqpConnectionRedirectException".]
+                return new ConnectionStatusAmqpConnectionRedirectException();
+            case ConnectionStatusAmqpDecodeErrorException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_066: [The function shall map amqp exception code "amqp:decode-error" to ConnectionStatusException "ConnectionStatusAmqpDecodeErrorException".]
+                return new ConnectionStatusAmqpDecodeErrorException();
+            case ConnectionStatusAmqpDetachForcedException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_083: [The function shall map amqp exception code "amqp:link:detach-forced" to ConnectionStatusException "ConnectionStatusAmqpDetachForcedException".]
+                return new ConnectionStatusAmqpDetachForcedException();
+            case ConnectionStatusAmqpErrantLinkException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_080: [The function shall map amqp exception code "amqp:session:errant-link" to ConnectionStatusException "ConnectionStatusAmqpErrantLinkException".]
+                return new ConnectionStatusAmqpErrantLinkException();
+            case ConnectionStatusAmqpFrameSizeTooSmallException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_075: [The function shall map amqp exception code "amqp:frame-size-too-small" to ConnectionStatusException "ConnectionStatusAmqpFrameSizeTooSmallException".]
+                return new ConnectionStatusAmqpFrameSizeTooSmallException();
+            case ConnectionStatusAmqpFramingErrorException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_077: [The function shall map amqp exception code "amqp:connection:framing-error" to ConnectionStatusException "ConnectionStatusAmqpFramingErrorException".]
+                return new ConnectionStatusAmqpFramingErrorException();
+            case ConnectionStatusAmqpHandleInUseException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_081: [The function shall map amqp exception code "amqp:session:handle-in-use" to ConnectionStatusException "ConnectionStatusAmqpHandleInUseException".]
+                return new ConnectionStatusAmqpHandleInUseException();
+            case ConnectionStatusAmqpIllegalStateException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_074: [The function shall map amqp exception code "amqp:illegal-state" to ConnectionStatusException "ConnectionStatusAmqpIllegalStateException".]
+                return new ConnectionStatusAmqpIllegalStateException();
+            case ConnectionStatusAmqpInternalErrorException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_063: [The function shall map amqp exception code "amqp:internal-error" to ConnectionStatusException "ConnectionStatusAmqpInternalErrorException".]
+                return new ConnectionStatusAmqpInternalErrorException();
+            case ConnectionStatusAmqpInvalidFieldException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_069: [The function shall map amqp exception code "amqp:invalid-field" to ConnectionStatusException "ConnectionStatusAmqpInvalidFieldException".]
+                return new ConnectionStatusAmqpInvalidFieldException();
+            case ConnectionStatusAmqpLinkRedirectException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_086: [The function shall map amqp exception code "amqp:link:redirect" to ConnectionStatusException "ConnectionStatusAmqpLinkRedirectException".]
+                return new ConnectionStatusAmqpLinkRedirectException();
+            case ConnectionStatusAmqpLinkStolenException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_087: [The function shall map amqp exception code "amqp:link:stolen" to ConnectionStatusException "ConnectionStatusAmqpLinkStolenException".]
+                return new ConnectionStatusAmqpLinkStolenException();
+            case ConnectionStatusAmqpMessageSizeExceededException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_085: [The function shall map amqp exception code "amqp:link:message-size-exceeded" to ConnectionStatusException "ConnectionStatusAmqpMessageSizeExceededException".]
+                return new ConnectionStatusAmqpMessageSizeExceededException();
+            case ConnectionStatusAmqpNotAllowedException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_068: [The function shall map amqp exception code "amqp:not-allowed" to ConnectionStatusException "ConnectionStatusAmqpNotAllowedException".]
+                return new ConnectionStatusAmqpNotAllowedException();
+            case ConnectionStatusAmqpNotFoundException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_064: [The function shall map amqp exception code "amqp:not-found" to ConnectionStatusException "ConnectionStatusAmqpNotFoundException".]
+                return new ConnectionStatusAmqpNotFoundException();
+            case ConnectionStatusAmqpNotImplementedException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_070: [The function shall map amqp exception code "amqp:not-implemented" to ConnectionStatusException "ConnectionStatusAmqpNotImplementedException".]
+                return new ConnectionStatusAmqpNotImplementedException();
+            case ConnectionStatusAmqpPreconditionFailedException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_072: [The function shall map amqp exception code "amqp:precondition-failed" to ConnectionStatusException "ConnectionStatusAmqpPreconditionFailedException".]
+                return new ConnectionStatusAmqpPreconditionFailedException();
+            case ConnectionStatusAmqpResourceDeletedException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_073: [The function shall map amqp exception code "amqp:resource-deleted" to ConnectionStatusException "ConnectionStatusAmqpResourceDeletedException".]
+                return new ConnectionStatusAmqpResourceDeletedException();
+            case ConnectionStatusAmqpResourceLimitExceededException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_067: [The function shall map amqp exception code "amqp:resource-limit-exceeded" to ConnectionStatusException "ConnectionStatusAmqpResourceLimitExceededException".]
+                return new ConnectionStatusAmqpResourceLimitExceededException();
+            case ConnectionStatusAmqpResourceLockedException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_071: [The function shall map amqp exception code "amqp:resource-locked" to ConnectionStatusException "ConnectionStatusAmqpResourceLockedException".]
+                return new ConnectionStatusAmqpResourceLockedException();
+            case ConnectionStatusAmqpTransferLimitExceededException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_084: [The function shall map amqp exception code "amqp:link:transfer-limit-exceeded" to ConnectionStatusException "ConnectionStatusAmqpTransferLimitExceededException".]
+                return new ConnectionStatusAmqpTransferLimitExceededException();
+            case ConnectionStatusAmqpUnattachedHandleException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_082: [The function shall map amqp exception code "amqp:session:unattached-handle" to ConnectionStatusException "ConnectionStatusAmqpUnattachedHandleException".]
+                return new ConnectionStatusAmqpUnattachedHandleException();
+            case ConnectionStatusAmqpUnauthorizedAcessException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_065: [The function shall map amqp exception code "amqp:unauthorized-access" to ConnectionStatusException "ConnectionStatusAmqpUnauthorizedAcessException".]
+                return new ConnectionStatusAmqpUnauthorizedAcessException();
+            case ConnectionStatusAmqpWindowViolationException.errorCode:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_079: [The function shall map amqp exception code "amqp:session:window-violation" to ConnectionStatusException "ConnectionStatusAmqpWindowViolationException".]
+                return new ConnectionStatusAmqpWindowViolationException();
+            default:
+                // Codes_SRS_AMQPSIOTHUBCONNECTION_34_088: [The function shall map all other amqp exception codes to the generic ConnectionStatusException "ProtocolConnectionStatusException".]
+                return new ProtocolConnectionStatusException();
         }
     }
 
@@ -887,7 +1005,13 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
     @Override
     public void addListener(IotHubListener listener) throws IOException
     {
+        if (listener == null)
+        {
+            throw new IllegalArgumentException("listener cannot be null");
+        }
 
+        // Codes_SRS_AMQPSIOTHUBCONNECTION_12_054: [The function shall add the given listener to the listener list.]
+        this.listeners.add(listener);
     }
 
     @Override
@@ -900,5 +1024,21 @@ public final class AmqpsIotHubConnection extends BaseHandler implements IotHubTr
     public IotHubStatusCode sendMessageResult(com.microsoft.azure.sdk.iot.device.Message message, IotHubMessageResult result) throws IOException
     {
         return null;
+    }
+
+    private void notifyListenersMessageReceived(com.microsoft.azure.sdk.iot.device.Message message, Throwable throwable)
+    {
+        for (IotHubListener listener : this.listeners)
+        {
+            listener.onMessageReceived(message, throwable);
+        }
+    }
+
+    private void notifyListenersConnectionLost(Throwable throwable)
+    {
+        for (IotHubListener listener : this.listeners)
+        {
+            listener.onConnectionLost(throwable);
+        }
     }
 }
