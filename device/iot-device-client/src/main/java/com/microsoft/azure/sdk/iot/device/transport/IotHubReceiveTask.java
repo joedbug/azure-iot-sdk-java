@@ -19,7 +19,6 @@ public final class IotHubReceiveTask implements Runnable
 
     public IotHubReceiveTask(IotHubTransport transport)
     {
-
         if (transport == null)
         {
 
@@ -29,12 +28,12 @@ public final class IotHubReceiveTask implements Runnable
 
         // Codes_SRS_IOTHUBRECEIVETASK_11_001: [The constructor shall save the transport.]
         this.transport = transport;
-
     }
 
     public void run()
     {
-    
+        Thread.currentThread().setName("azure-iot-sdk-IotHubReceiveTask");
+
         try
         {
             // Codes_SRS_IOTHUBRECEIVETASK_11_002: [The function shall poll an IoT Hub for messages, invoke the message callback if one exists, and return one of COMPLETE, ABANDON, or REJECT to the IoT Hub.]

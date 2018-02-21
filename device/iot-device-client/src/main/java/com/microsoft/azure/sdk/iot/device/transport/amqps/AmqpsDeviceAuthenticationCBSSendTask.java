@@ -32,6 +32,8 @@ public final class AmqpsDeviceAuthenticationCBSSendTask implements Runnable
     @Override
     public void run()
     {
+        Thread.currentThread().setName("azure-iot-sdk-AmqpsDeviceAuthenticationCBSSendTask");
+
         try
         {
             // Codes_SRS_AMQPSDEVICEAUTHENTICATIONCBSSENDTASK_12_003: [The function shall call the amqpsDeviceAuthenticationCBS.sendAuthenticationMessages.]

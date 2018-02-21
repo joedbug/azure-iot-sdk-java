@@ -131,6 +131,8 @@ public final class FileUploadTask implements Runnable
     @Override
     public void run()
     {
+        Thread.currentThread().setName("azure-iot-sdk-FileUploadTask");
+
         FileUploadStatusParser fileUploadStatusParser = null;
         IotHubStatusCode resultStatus = IotHubStatusCode.OK;
 

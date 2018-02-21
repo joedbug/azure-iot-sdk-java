@@ -856,6 +856,7 @@ public final class AmqpsIotHubConnection extends BaseHandler
         @Override
         public Object call()
         {
+            Thread.currentThread().setName("azure-iot-sdk-ReactorRunner");
             iotHubReactor.run();
             return null;
         }

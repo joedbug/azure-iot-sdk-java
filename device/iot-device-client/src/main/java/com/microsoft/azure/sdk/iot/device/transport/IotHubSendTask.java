@@ -33,6 +33,8 @@ public final class IotHubSendTask implements Runnable
 
     public void run()
     {
+        Thread.currentThread().setName("azure-iot-sdk-IotHubSendTask");
+
         logger.LogTrace("Now sending all queued messages to IoT Hub");
 
         try

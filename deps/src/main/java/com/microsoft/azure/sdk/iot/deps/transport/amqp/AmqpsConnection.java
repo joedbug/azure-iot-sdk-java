@@ -555,7 +555,7 @@ public class AmqpsConnection extends BaseHandler
     private class ReactorRunner implements Callable
     {
         private final AmqpReactor amqpReactor;
-        private final  CustomLogger logger;
+        private final CustomLogger logger;
 
         ReactorRunner(AmqpReactor reactor, CustomLogger logger)
         {
@@ -566,6 +566,8 @@ public class AmqpsConnection extends BaseHandler
         @Override
         public Object call()
         {
+            Thread.currentThread().setName("azure-iot-sdk-ReactorRunner");
+
             try
             {
                 amqpReactor.run();

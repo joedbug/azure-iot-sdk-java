@@ -305,6 +305,7 @@ public class RegisterTask implements Callable
     @Override
     public RegistrationOperationStatusParser call() throws Exception
     {
+        Thread.currentThread().setName("azure-iot-sdk-RegisterTask");
         return this.authenticateWithDPS();
     }
 

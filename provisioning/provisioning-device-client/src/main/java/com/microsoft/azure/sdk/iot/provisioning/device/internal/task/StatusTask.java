@@ -135,6 +135,7 @@ public class StatusTask implements Callable
     @Override
     public RegistrationOperationStatusParser call() throws Exception
     {
-       return this.getRegistrationStatus(this.operationId, this.authorization);
+        Thread.currentThread().setName("azure-iot-sdk-StatusTask");
+        return this.getRegistrationStatus(this.operationId, this.authorization);
     }
 }

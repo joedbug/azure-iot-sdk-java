@@ -86,6 +86,8 @@ public class DeviceEmulator  implements Runnable
     @Override
     public void run()
     {
+        Thread.currentThread().setName("azure-iot-sdk-DeviceEmulator");
+
         while(!stopDevice)
         {
             try

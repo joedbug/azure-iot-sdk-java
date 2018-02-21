@@ -258,6 +258,8 @@ public class ProvisioningTask implements Callable
     @Override
     public Object call() throws Exception
     {
+        Thread.currentThread().setName("azure-iot-sdk-ProvisioningTask");
+
         try
         {
             //SRS_ProvisioningTask_25_015: [ This method shall invoke open call on the contract.]

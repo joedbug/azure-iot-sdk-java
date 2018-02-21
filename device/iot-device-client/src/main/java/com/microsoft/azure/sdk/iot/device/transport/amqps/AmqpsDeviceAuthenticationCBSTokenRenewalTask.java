@@ -32,6 +32,8 @@ public final class AmqpsDeviceAuthenticationCBSTokenRenewalTask implements Runna
     @Override
     public void run()
     {
+        Thread.currentThread().setName("azure-iot-sdk-AmqpsDeviceAuthenticationCBSTokenRenewalTask");
+
         try
         {
             // Codes_SRS_AMQPSDEVICEAUTHENTICATIONCBSTOKENRENEWALTASK_12_003: [The function shall call the amqpsSessionDeviceOperation.renewToken.]
